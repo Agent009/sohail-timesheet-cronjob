@@ -1,10 +1,7 @@
 require('dotenv').config();
 const express = require('express');
-const ejs = require('ejs');
-const fs = require('fs');
 const app = express();
 const port = 3000;
-const puppeteer = require('puppeteer');
 const { fetchAccessToken } = require('./common/authenticateRedbooth.js');
 const { 
     syncRedboothProjects, 
@@ -12,13 +9,20 @@ const {
     syncRedboothUsers, 
     syncRedboothTasksLoggings 
 } = require('./common/syncRedbooth.js');
-const { renderUsersLoggings, generateInvoiceData } = require('./common/renderMethods.js');
+const { renderUsersLoggings, generateInvoiceData, generatePdfInvoice } = require('./common/renderMethods.js');
+const { User, Logging } = require('./common/db.js')
 
 // Set ejs as express view engine
 app.set('views', 'views');
 app.set('view engine', 'ejs');
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
+
+app.get('/', async (req, res) => {
+    const userIdsWithLoggings = await Logging.find().distinct('rbUserId');
+    const users = await User.find({ rbUserId: { "$in" : userIdsWithLoggings } }).lean();
+    res.render('index', {users});
+});
 
 app.get('/authorize', async (req, res) => {
     const accessToken = await fetchAccessToken(null, req.query.code);
@@ -40,36 +44,23 @@ app.get('/sync-data', async (req, res) => {
 });
 
 app.get('/render-data', async (req, res) => {
-    const { month, year, invoice, userId } = req.query;
+    const { json, month, year, invoice, userId } = req.query;
     var loggingsData = await renderUsersLoggings({month, year, invoice, userId});
-    res.json(loggingsData);
-});
-
-app.get('/render-data-view', async (req, res) => {
-    const { month, year, invoice, userId } = req.query;
-    var loggingsData = await renderUsersLoggings({month, year, invoice, userId});
-    res.render('renderDataView', {loggingsData, month, year});
-});
-
-app.get('/generate-pdf-invoice', async (req, res) => {
-    const { month, year, userId, hourlyRate, generatePdf } = req.query;
-    var data = await generateInvoiceData(month, year, userId, hourlyRate);
-    if (generatePdf) {
-        const browser = await puppeteer.launch({headless: "new"});
-        const page = await browser.newPage();
-        const html = fs.readFileSync('./views/invoiceTemplate.ejs', 'utf-8');
-        const renderedHtml = ejs.render(html, {data});
-        await page.setContent(renderedHtml, { waitUntil: 'domcontentloaded'});
-        // To reflect CSS used for screens instead of print
-        await page.emulateMediaType('screen');
-        //await page.screenshot({path: "canvas.png"})
-        await page.pdf({
-            path: `./invoices/${data.name} - ${data.invoiceDate}.pdf`
-        });
-        await browser.close();
-        res.send('PDF invoice has been generated!');
+    if (json) {
+        res.json(loggingsData);
     } else {
-        res.render('invoiceTemplate', {data});
+        res.render('renderDataView', {loggingsData, month, year});
+    }
+});
+
+app.get('/generate-invoice', async (req, res) => {
+    const { month, year, userId, hourlyRate, invoiceNo, generatePdf, customItem, customValue } = req.query;
+    var data = await generateInvoiceData(month, year, userId, hourlyRate, invoiceNo, customItem, customValue);
+    if (generatePdf == 1) {
+        const invoiceFile = await generatePdfInvoice(data);
+        res.download(invoiceFile);
+    } else {
+        res.render('generateInvoice', {data});
     }
 });
 
